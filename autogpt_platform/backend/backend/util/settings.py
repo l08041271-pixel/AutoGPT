@@ -262,6 +262,42 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
         default=300,
         description="Cluster lock timeout in seconds for graph execution coordination.",
     )
+    enable_dropped_run_recovery: bool = Field(
+        default=True,
+        description=(
+            "Adopt unfinished graph executions whose cluster lock is gone, so a "
+            "run dropped by a dying executor is resumed instead of staying "
+            "RUNNING forever."
+        ),
+    )
+    dropped_run_recovery_interval_seconds: int = Field(
+        default=60,
+        ge=5,
+        description="How often each executor sweeps for dropped graph executions.",
+    )
+    dropped_run_recovery_grace_seconds: int = Field(
+        default=600,
+        ge=60,
+        description=(
+            "How long a graph execution must be unfinished before it is "
+            "considered dropped. Must exceed cluster_lock_timeout, since a "
+            "dropped run keeps its lock until the dead owner's TTL expires."
+        ),
+    )
+    dropped_run_recovery_max_age_seconds: int = Field(
+        default=24 * 60 * 60,
+        ge=600,
+        description=(
+            "How far back a recovery sweep looks for dropped graph "
+            "executions. Older unfinished runs are abandoned rather than "
+            "resumed, so the sweep cannot resurrect a months-old run."
+        ),
+    )
+    dropped_run_recovery_batch_size: int = Field(
+        default=25,
+        ge=1,
+        description="Maximum dropped executions adopted per recovery sweep.",
+    )
     execution_late_notification_checkrange_secs: int = Field(
         default=60 * 60,
         description="Time in seconds for how far back to check for the late executions.",

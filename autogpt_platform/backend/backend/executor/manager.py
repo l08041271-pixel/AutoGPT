@@ -96,7 +96,8 @@ from .activity_status_generator import (
 )
 from .auto_credentials import acquire_auto_credentials
 from .automod.manager import automod_manager
-from .cluster_lock import ClusterLock
+from .cluster_lock import ClusterLock, execution_lock_key
+from .run_recovery import recover_dropped_runs
 from .simulator import get_dry_run_credentials, prepare_dry_run, simulate_block
 from .utils import (
     GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
@@ -1575,6 +1576,7 @@ class ExecutionManager(AppProcess):
         self._cancel_client = None
         self._run_thread = None
         self._run_client = None
+        self._recovery_thread = None
 
         self._execution_locks = {}
 
@@ -1595,6 +1597,16 @@ class ExecutionManager(AppProcess):
                 daemon=True,
             )
         return self._run_thread
+
+    @property
+    def recovery_thread(self) -> threading.Thread:
+        if self._recovery_thread is None:
+            self._recovery_thread = threading.Thread(
+                target=lambda: self._consume_dropped_runs(),
+                daemon=True,
+                name="dropped-run-recovery",
+            )
+        return self._recovery_thread
 
     @property
     def stop_consuming(self) -> threading.Event:
@@ -1644,6 +1656,7 @@ class ExecutionManager(AppProcess):
 
         self.cancel_thread.start()
         self.run_thread.start()
+        self.recovery_thread.start()
 
         while True:
             time.sleep(1e5)
@@ -1724,6 +1737,29 @@ class ExecutionManager(AppProcess):
                 f"[{self.service_name}] ❌ run message consumer is stopped: {run_channel}"
             )
         logger.info(f"[{self.service_name}] ✅ Run message consumer stopped gracefully")
+
+    def _consume_dropped_runs(self):
+        """Adopt unfinished runs whose executor is gone.
+
+        A pod that dies mid-run leaves the run message consumed and the DB row
+        unfinished, so nothing retries it and the row sits at RUNNING forever.
+        The cluster lock goes away with its owner, so an unfinished run without
+        a lock has nobody working on it and is safe to re-queue.
+        """
+        loop = asyncio.new_event_loop()
+        interval = settings.config.dropped_run_recovery_interval_seconds
+        try:
+            while not self.stop_consuming.is_set():
+                try:
+                    loop.run_until_complete(recover_dropped_runs())
+                except Exception as e:
+                    logger.warning(
+                        f"[{self.service_name}] Dropped run sweep failed: "
+                        f"{type(e).__name__}: {e}"
+                    )
+                self.stop_consuming.wait(interval)
+        finally:
+            loop.close()
 
     @error_logged(swallow=True)
     def _handle_cancel_message(
@@ -1903,7 +1939,7 @@ class ExecutionManager(AppProcess):
         # Try to acquire cluster-wide execution lock
         cluster_lock = ClusterLock(
             redis=redis.get_redis(),
-            key=f"exec_lock:{graph_exec_id}",
+            key=execution_lock_key(graph_exec_id),
             owner_id=self.executor_id,
             timeout=settings.config.cluster_lock_timeout,
         )
