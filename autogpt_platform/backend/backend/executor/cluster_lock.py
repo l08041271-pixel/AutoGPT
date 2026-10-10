@@ -15,6 +15,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+EXECUTION_LOCK_PREFIX = "exec_lock:"
+
+
+def execution_lock_key(graph_exec_id: str) -> str:
+    """Redis key naming the executor responsible for a graph execution.
+
+    The holder of this key is the one pod allowed to work on the run, and its
+    absence is what marks an unfinished run as dropped (see
+    ``backend.executor.run_recovery``).
+    """
+    return f"{EXECUTION_LOCK_PREFIX}{graph_exec_id}"
+
+
 # Transient redis errors retried internally by the client; if they still
 # surface here, retries are exhausted — log at warning to keep Sentry quiet
 # during rotation windows.
