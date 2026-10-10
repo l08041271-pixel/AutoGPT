@@ -8,6 +8,7 @@ import pytest
 
 from backend.data.execution import ExecutionStatus, GraphExecutionMeta
 from backend.executor import run_recovery
+from backend.executor.manager import ExecutionManager
 from backend.executor.cluster_lock import execution_lock_key
 from backend.executor.run_recovery import recover_dropped_runs
 
@@ -213,3 +214,42 @@ async def test_scan_stops_at_the_maximum_page_count(sweep: _Harness):
         sweep.db.get_graph_executions.await_count
         == run_recovery.MAX_SCAN // run_recovery.PAGE_SIZE
     )
+
+
+def test_recovery_loop_sweeps_then_stops_on_shutdown(mocker):
+    """The sweep must run on startup, not only after the first interval."""
+    manager = ExecutionManager()
+    sweeps = []
+
+    async def _sweep() -> list[str]:
+        sweeps.append(manager.stop_consuming.is_set())
+        manager.stop_consuming.set()
+        return []
+
+    mocker.patch("backend.executor.manager.recover_dropped_runs", new=_sweep)
+
+    manager._consume_dropped_runs()
+
+    assert sweeps == [False]
+
+
+def test_recovery_loop_survives_a_failed_sweep(mocker):
+    manager = ExecutionManager()
+    mocker.patch(
+        "backend.executor.manager.settings",
+        SimpleNamespace(config=_config(dropped_run_recovery_interval_seconds=0.01)),
+    )
+    sweeps = []
+
+    async def _sweep() -> list[str]:
+        sweeps.append(1)
+        if len(sweeps) == 1:
+            raise RuntimeError("redis is down")
+        manager.stop_consuming.set()
+        return []
+
+    mocker.patch("backend.executor.manager.recover_dropped_runs", new=_sweep)
+
+    manager._consume_dropped_runs()
+
+    assert len(sweeps) == 2

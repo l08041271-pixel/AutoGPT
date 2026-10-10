@@ -137,6 +137,9 @@ async def _adopt_if_unowned(
     if not await _claim(redis_client, meta.id):
         return False
 
+    # The run was admitted once already, so recovery must not re-gate it on a
+    # paywall or expert budget that may have moved since: that would strand the
+    # run in RUNNING exactly when it needs picking back up.
     requeued = await add_graph_execution(
         graph_id=meta.graph_id,
         user_id=meta.user_id,
