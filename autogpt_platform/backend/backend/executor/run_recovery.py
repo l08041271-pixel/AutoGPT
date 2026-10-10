@@ -61,12 +61,17 @@ async def recover_dropped_runs() -> list[str]:
 async def _adopt_unowned(
     db: "DatabaseManagerAsyncClient", redis_client: "AsyncRedisClient"
 ) -> list[str]:
-    """Walk dropped-run candidates oldest first, adopting the unowned ones."""
+    """Walk dropped-run candidates oldest first, adopting the unowned ones.
+
+    The window is fixed for the whole walk: an upper bound that moved between
+    pages would shift rows out from under the offset.
+    """
     want = settings.config.dropped_run_recovery_batch_size
+    window = _candidate_window()
     adopted: list[str] = []
     scanned = 0
     while len(adopted) < want and scanned < MAX_SCAN:
-        page = await _running_executions(db, _candidate_window(), scanned)
+        page = await _running_executions(db, window, scanned)
         if not page:
             break
         scanned += len(page)

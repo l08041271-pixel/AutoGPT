@@ -191,6 +191,24 @@ async def test_sweep_pages_past_runs_that_are_still_owned(sweep: _Harness):
     assert offsets == [0, run_recovery.PAGE_SIZE]
 
 
+async def test_the_candidate_window_is_fixed_across_pages(sweep: _Harness):
+    """A moving upper bound would shift rows out from under the offset."""
+    owned = [_meta(f"owned-{i}") for i in range(run_recovery.PAGE_SIZE)]
+    sweep.db.get_graph_executions.side_effect = [owned, [_meta("dropped")]]
+    sweep.redis.get.side_effect = (
+        lambda key: "other-pod" if key.startswith("exec_lock:owned-") else None
+    )
+
+    assert await recover_dropped_runs() == ["dropped"]
+
+    windows = [
+        call.kwargs["started_time_lte"]
+        for call in sweep.db.get_graph_executions.await_args_list
+    ]
+    assert len(windows) == 2
+    assert windows[0] == windows[1]
+
+
 async def test_adoptions_are_capped_by_the_batch_size(mocker, sweep: _Harness):
     mocker.patch.object(
         run_recovery,
